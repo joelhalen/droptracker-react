@@ -1,7 +1,23 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import ProfilePost from './ProfilePost';
+import axios from 'axios';
 
-const ProfileContent = () => {
+const ProfileContent = ({ userId }) => {
+  const [userData, setUserData] = useState(null);
+  const apiBaseUrl = process.env.REACT_APP_API_BASE_URL;
+
+  useEffect(() => {
+    if (userId) {
+      axios.get(`${apiBaseUrl}/api/users/${userId}`)
+        .then(response => setUserData(response.data))
+        .catch(error => console.error('Error fetching user data:', error));
+    }
+  }, [userId, apiBaseUrl]);
+
+  if (!userData) {
+    return <div>Loading...</div>;
+  }
+
   return (
     <div className="profile-content">
       <ul className="profile-tab nav nav-tabs nav-tabs-v2">
@@ -40,7 +56,7 @@ const ProfileContent = () => {
         <div className="row gx-4">
           <div className="col-xl-8">
             <div className="tab-content p-0">
-              <ProfilePost />
+              <ProfilePost userId={userId} />
               {/* Add other tab panes here */}
             </div>
           </div>

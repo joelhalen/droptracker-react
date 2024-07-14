@@ -1,47 +1,39 @@
-// backend/public/publicRoutes.js
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
-const { promisify } = require('util');
 const { WOMClient } = require('@wise-old-man/utils');
-const mysql = require('mysql2/promise');
 const NodeCache = require('node-cache');
 const cache = new NodeCache({ stdTTL: 600 });
 const { sendMessageToAllClients, sendMessageToLocalClients } = require('../utils/websocketMessageAll');
-const axios = require('axios'); // Add this line
+const axios = require('axios');
+
+const { Sequelize, Op } = require('sequelize');
 
 const womclient = new WOMClient({
   userAgent: '@joelhalen -discord'
 });
+
+const { User, Clan, Drop, DropTotal, Log, NewsPost, Notification } = require('../../models');
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const REDIRECT_URI = process.env.REDIRECT_URI;
 const SECRET_KEY = process.env.SECRET_KEY;
 
-const DB_HOST = process.env.DB_HOST;
-const DB_USER = process.env.DB_USER;
-const DB_PASSWORD = process.env.DB_PASSWORD;
-const DB_NAME = process.env.DB_NAME;
-
-
-// Create a connection pool
-const pool = mysql.createPool({
-  host: DB_HOST,
-  user: DB_USER,
-  password: DB_PASSWORD,
-  database: DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-
-
 router.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = { id: 'user-id', email };
-  const token = jwt.sign(user, process.env.SECRET_KEY);
-  res.json({ user, token });
+  try {
+    const user = await User.findOne({ where: { email } });
+    if (user && user.password === password) { // Assuming you have a password field
+      const token = jwt.sign({ id: user.uid, email: user.email }, SECRET_KEY);
+      res.json({ user, token });
+    } else {
+      res.status(401).json({ error: 'Invalid credentials' });
+    }
+  } catch (error) {
+    console.error('Error during login:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
 router.get('/auth/discord/callback', async (req, res) => {
@@ -50,11 +42,11 @@ router.get('/auth/discord/callback', async (req, res) => {
 
   try {
     const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
-      client_id: process.env.CLIENT_ID,
-      client_secret: process.env.CLIENT_SECRET,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
       grant_type: 'authorization_code',
       code,
-      redirect_uri: process.env.REDIRECT_URI,
+      redirect_uri: REDIRECT_URI,
     }).toString(), {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -73,21 +65,20 @@ router.get('/auth/discord/callback', async (req, res) => {
     const discordUser = userResponse.data;
     console.log('User info from Discord:', discordUser);
 
-    const [rows] = await pool.execute('SELECT * FROM users WHERE discordId = ?', [discordUser.id]);
+    let user = await User.findOne({ where: { discordId: discordUser.id } });
     let isNewUser = false;
-    let user;
 
-    if (rows.length === 0) {
+    if (!user) {
       const email = discordUser.email || '';
-      const [result] = await pool.execute(
-        'INSERT INTO users (displayName, discordId, email) VALUES (?, ?, ?)',
-        [discordUser.username, discordUser.id, email]
-      );
-      user = { id: result.insertId, displayName: discordUser.username, discordId: discordUser.id, email: email };
+      user = await User.create({
+        displayName: discordUser.username,
+        discordId: discordUser.id,
+        email: email
+      });
       isNewUser = true;
       const type = 'send_message';
       const targetChannel = null;
-      const targetUser =  discordUser.id;
+      const targetUser = discordUser.id;
       const content = `Hey, <@${targetUser}>!`;
       const embed = {
         title: 'Your account has been registered!',
@@ -97,7 +88,7 @@ router.get('/auth/discord/callback', async (req, res) => {
           {
             name: 'What now?',
             value: 'Make sure you have our [RuneLite plugin](https://www.droptracker.io/runelite) installed!\n' +
-            'Join our [Discord server](https://www.droptracker.io/discord) so you can stay in-the-loop on what to expect!',
+              'Join our [Discord server](https://www.droptracker.io/discord) so you can stay in-the-loop on what to expect!',
             inline: false
           },
           {
@@ -114,21 +105,11 @@ router.get('/auth/discord/callback', async (req, res) => {
         },
         timestamp: new Date()
       };
-        sendMessageToLocalClients(type, targetChannel, targetUser, content, embed);
-    } else {
-      user = rows[0];
+      sendMessageToLocalClients(type, targetChannel, targetUser, content, embed);
     }
 
-    console.log('User record from database:', user);
-
-    const token = jwt.sign({ id: user.id, username: user.displayName, email: user.email }, process.env.SECRET_KEY);
-
-    if (isNewUser) {
-      res.redirect(`http://droptracker.io:21222?token=${token}&new=true`);
-
-    } else {
-      res.redirect(`http://droptracker.io:21222?token=${token}`);
-    }
+    const token = jwt.sign({ id: user.id, username: user.displayName, email: user.email }, SECRET_KEY);
+    res.redirect(`http://droptracker.io:21222?token=${token}${isNewUser ? '&new=true' : ''}`);
   } catch (error) {
     console.error('Error during Discord OAuth2 callback:', error);
     res.status(500).send('Internal Server Error');
@@ -138,13 +119,15 @@ router.get('/auth/discord/callback', async (req, res) => {
 router.get('/auth/me', async (req, res) => {
   try {
     const token = req.headers.authorization.split(' ')[1];
-    const decodedToken = jwt.verify(token, process.env.SECRET_KEY);
+    const decodedToken = jwt.verify(token, SECRET_KEY);
     console.log('Decoded token:', decodedToken);
 
-    const [rows] = await pool.execute('SELECT uid, displayName as username, email, discordId FROM users WHERE email = ?', [decodedToken.email]);
+    const user = await User.findOne({
+      where: { email: decodedToken.email },
+      attributes: ['uid', ['displayName', 'username'], 'email', 'discordId']
+    });
 
-    if (rows.length > 0) {
-      const user = rows[0];
+    if (user) {
       console.log('User found:', user);
       res.json(user);
     } else {
@@ -157,22 +140,22 @@ router.get('/auth/me', async (req, res) => {
 });
 
 router.get('/notifications', async (req, res) => {
-  const token = req.headers.authorization.split(' ')[1];
-  jwt.verify(token, process.env.SECRET_KEY, async (err, user) => {
-    if (err) {
-      return res.sendStatus(403);
-    }
-    try {
-      const [notifications] = await pool.execute(
-        'SELECT * FROM notifications WHERE userId = ? OR isGlobal = true ORDER BY createdAt DESC',
-        [user.id]
-      );
-      res.json(notifications);
-    } catch (error) {
-      console.error('Error fetching notifications:', error);
-      res.status(500).json({ error: 'Failed to fetch notifications' });
-    }
-  });
+  try {
+    const token = req.headers.authorization.split(' ')[1];
+    const decodedToken = jwt.verify(token, SECRET_KEY);
+
+    const notifications = await Notification.findAll({
+      where: {
+        [Op.or]: [{ userId: decodedToken.id }, { isGlobal: true }]
+      },
+      order: [['createdAt', 'DESC']]
+    });
+
+    res.json(notifications);
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
 });
 
 router.post('/api/notifications', async (req, res) => {
@@ -181,10 +164,12 @@ router.post('/api/notifications', async (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   try {
-    await pool.execute(
-      'INSERT INTO notifications (userId, message, type, isGlobal) VALUES (?, ?, ?, ?)',
-      [isGlobal ? null : userId, message, type, isGlobal]
-    );
+    await Notification.create({
+      userId: isGlobal ? null : userId,
+      message,
+      type,
+      isGlobal
+    });
     res.status(201).json({ message: 'Notification created successfully' });
   } catch (error) {
     console.error('Error creating notification:', error);
@@ -199,10 +184,9 @@ router.get('/api/get-user-rsns', async (req, res) => {
   }
 
   try {
-    const [rows] = await pool.execute('SELECT rsns FROM users WHERE discordId = ?', [userId]);
-    if (rows.length > 0) {
-      const userRSNs = JSON.parse(rows[0].rsns);
-      res.json({ rsns: userRSNs });
+    const user = await User.findOne({ where: { discordId: userId } });
+    if (user) {
+      res.json({ rsns: user.rsns });
     } else {
       res.status(404).json({ error: 'User not found' });
     }
@@ -219,7 +203,7 @@ router.get('/api/check-rsn-uniqueness', async (req, res) => {
   }
 
   try {
-    const [rows] = await pool.execute('SELECT rsns, wiseOldManIds FROM users');
+    const users = await User.findAll();
     const lowerCasedRSN = rsn.toLowerCase();
     let womId = null;
     let isUnique = true;
@@ -227,8 +211,8 @@ router.get('/api/check-rsn-uniqueness', async (req, res) => {
     let ehb = null;
     let ehp = null;
 
-    for (const row of rows) {
-      const rsns = JSON.parse(row.rsns);
+    for (const user of users) {
+      const rsns = user.rsns;
       if (rsns.some(userRSN => userRSN.toLowerCase() === lowerCasedRSN)) {
         isUnique = false;
         break;
@@ -243,46 +227,32 @@ router.get('/api/check-rsn-uniqueness', async (req, res) => {
         ehb = parseFloat(player.ehb.toFixed(2));
         ehp = parseFloat(player.ehp.toFixed(2));
 
-        const [userRows] = await pool.execute('SELECT rsns, wiseOldManIds, uid FROM users WHERE discordId = ?', [userId]);
+        const user = await User.findOne({ where: { discordId: userId } });
 
-        console.log('Fetched userRows:', userRows);
-
-        if (userRows.length > 0) {
-          let userRSNs = JSON.parse(userRows[0].rsns);
-          let userWomIds = JSON.parse(userRows[0].wiseOldManIds);
-          let userDroptrackerId = userRows[0].uid;
-
-          console.log('Parsed userRSNs:', userRSNs);
-          console.log('Parsed userWomIds:', userWomIds);
+        if (user) {
+          let userRSNs = user.rsns;
+          let userWomIds = user.wiseOldManIds;
+          let userDroptrackerId = user.uid;
 
           userRSNs.push(rsn);
           userWomIds.push(womId);
 
-          console.log('Updating user with new RSN and WOM ID:', {
-            rsns: userRSNs,
-            wiseOldManIds: userWomIds,
-            userId
+          await User.update(
+            {
+              rsns: userRSNs,
+              wiseOldManIds: userWomIds
+            },
+            { where: { discordId: userId } }
+          );
+
+          await Log.create({
+            eventType: "rsn claimed",
+            description: `${userId} has claimed ${rsn} (womId: ${womId})`,
+            eventId: 2,
+            userId: userDroptrackerId,
+            additionalData: { rsn, womId, overallLevel, ehb, ehp }
           });
 
-          const [updateResult] = await pool.execute('UPDATE users SET rsns = ?, wiseOldManIds = ? WHERE discordId = ?', [
-            JSON.stringify(userRSNs),
-            JSON.stringify(userWomIds),
-            userId
-          ]);
-
-          console.log('Update query result:', updateResult);
-
-          const insertLogQuery = `
-            INSERT INTO logs (event_type, description, event_id, user_id, additional_data)
-            VALUES (?, ?, ?, ?, ?);
-          `;
-          await pool.execute(insertLogQuery, [
-            "rsn claimed",
-            `${userId} has claimed ${rsn} (womId: ${womId})`,
-            2,
-            userDroptrackerId,
-            JSON.stringify({ rsn, womId, overallLevel, ehb, ehp })
-          ]);
           console.log(`${rsn} claimed by ID ${userId}`);
         } else {
           console.error('User not found for userId:', userId);
@@ -301,44 +271,41 @@ router.get('/api/check-rsn-uniqueness', async (req, res) => {
   }
 });
 
-
 router.get('/api/top_players_by_drops', async (req, res) => {
   const cacheKey = `top_players_by_drops`;
   const cachedData = cache.get(cacheKey);
   if (cachedData) {
     return res.json(cachedData);
   }
-  
-  try {
-    const [topPlayers] = await pool.execute(`
-      SELECT 
-        d.rsn,
-        SUM(d.value * d.quantity) AS total_value,
-        u.uid,
-        u.displayName
-      FROM 
-        drops d
-      LEFT JOIN 
-        users u ON JSON_CONTAINS(u.rsns, JSON_QUOTE(d.rsn), '$')
-      WHERE 
-        d.time >= NOW() - INTERVAL 7 DAY
-      GROUP BY 
-        d.rsn, u.uid, u.displayName
-      ORDER BY 
-        total_value DESC
-      LIMIT 10
-    `);
 
-    const formattedPlayers = topPlayers.map(player => {
-      const formattedValue = formatValue(player.total_value);
-      return {
-        rsn: player.rsn,
-        totalValue: formattedValue,
-        registered: !!player.uid,
-        userId: player.uid || null,
-        displayName: player.displayName || null
-      };
+  try {
+    const topPlayers = await Drop.findAll({
+      attributes: [
+        'rsn',
+        [Sequelize.fn('SUM', Sequelize.col('value') * Sequelize.col('quantity')), 'total_value']
+      ],
+      include: [{
+        model: User,
+        attributes: ['uid', 'displayName'],
+        where: Sequelize.where(Sequelize.fn('JSON_CONTAINS', Sequelize.col('rsns'), Sequelize.fn('JSON_QUOTE', Sequelize.col('rsn'))), true)
+      }],
+      where: {
+        time: {
+          [Op.gte]: Sequelize.literal('NOW() - INTERVAL 7 DAY')
+        }
+      },
+      group: ['rsn', 'User.uid', 'User.displayName'],
+      order: [[Sequelize.literal('total_value'), 'DESC']],
+      limit: 10
     });
+
+    const formattedPlayers = topPlayers.map(player => ({
+      rsn: player.rsn,
+      totalValue: formatValue(player.total_value),
+      registered: !!player.User.uid,
+      userId: player.User.uid || null,
+      displayName: player.User.displayName || null
+    }));
 
     cache.set(cacheKey, formattedPlayers);
 
@@ -360,7 +327,6 @@ const formatValue = (value) => {
     return value.toString();
   }
 };
-
 router.get('/api/recent_drops', async (req, res) => {
   const cacheKey = 'recent_drops';
   const cachedData = cache.get(cacheKey);
@@ -373,32 +339,34 @@ router.get('/api/recent_drops', async (req, res) => {
   const minDropValue = process.env.MINIMUM_DROP_VALUE;
 
   try {
-    const [recentDrops] = await pool.execute(`
-      SELECT 
-        item_id,
-        rsn,
-        item_name, 
-        npc_name,
-        time,
-        SUM(value * quantity) AS total_value,
-        SUM(quantity) AS total_quantity_month,
-        (SELECT SUM(quantity) FROM drops WHERE item_id = d.item_id) AS total_quantity_all_time
-      FROM drops d
-      WHERE ym_partition = YEAR(CURRENT_DATE()) * 100 + MONTH(CURRENT_DATE())
-      GROUP BY item_id, item_name, time
-      HAVING total_value > ?
-      ORDER BY time DESC
-      LIMIT 10
-    `, [minDropValue]);
+    const recentDrops = await Drop.findAll({
+      attributes: [
+        'itemId',
+        'rsn',
+        'itemName',
+        'quantity',
+        'value',
+        'npcName',
+        'time',
+        [Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value` * `quantity`, 0)')), 'total_value'],
+        [Sequelize.fn('SUM', Sequelize.col('quantity')), 'total_quantity_month'],
+        [Sequelize.literal('(SELECT SUM(quantity) FROM drops WHERE `itemId` = `Drop.itemId`)'), 'total_quantity_all_time']
+      ],
+      where: Sequelize.where(Sequelize.literal('ym_partition'), Sequelize.literal('YEAR(CURRENT_DATE()) * 100 + MONTH(CURRENT_DATE())')),
+      group: ['itemId', 'itemName', 'time'],
+      having: Sequelize.where(Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value` * `quantity`, 0)')), '>', minDropValue),
+      order: [['total_value', 'DESC']],
+      limit: 10
+    });
 
     const endTime = process.hrtime(startTime);
     const executionTime = (endTime[0] * 1e9 + endTime[1]) / 1e6;
 
     const formattedDrops = recentDrops.map(drop => ({
-      ...drop,
-      total_value: formatValue(drop.total_value),
-      total_quantity_month: formatValue(drop.total_quantity_month),
-      total_quantity_all_time: formatValue(drop.total_quantity_all_time)
+      ...drop.get(),
+      total_value: formatValue(drop.get('total_value')),
+      total_quantity_month: formatValue(drop.get('total_quantity_month')),
+      total_quantity_all_time: formatValue(drop.get('total_quantity_all_time'))
     }));
 
     const responseData = {
@@ -422,6 +390,7 @@ router.get('/api/recent_drops', async (req, res) => {
   }
 });
 
+
 router.post('/api/send_discord_message', (req, res) => {
   const authKey = req.headers['authorization'];
 
@@ -439,6 +408,7 @@ router.post('/api/send_discord_message', (req, res) => {
 
   res.status(200).json({ message: 'Message sent to the new user' });
 });
+
 router.get('/api/most_valuable', async (req, res) => {
   const cacheKey = 'most_valuable';
   const cachedData = cache.get(cacheKey);
@@ -448,25 +418,25 @@ router.get('/api/most_valuable', async (req, res) => {
   }
 
   try {
-    const [valuableLoots] = await pool.execute(`
-      SELECT 
-        item_id, 
-        item_name, 
-        SUM(value * quantity) AS total_value,
-        SUM(quantity) AS total_quantity_month,
-        (SELECT SUM(quantity) FROM drops WHERE item_id = d.item_id) AS total_quantity_all_time
-      FROM drops d
-      WHERE ym_partition = YEAR(CURRENT_DATE()) * 100 + MONTH(CURRENT_DATE())
-      GROUP BY item_id, item_name
-      ORDER BY total_value DESC
-      LIMIT 10
-    `);
+    const valuableLoots = await Drop.findAll({
+      attributes: [
+        'item_id',
+        'item_name',
+        [Sequelize.fn('SUM', Sequelize.col('value') * Sequelize.col('quantity')), 'total_value'],
+        [Sequelize.fn('SUM', Sequelize.col('quantity')), 'total_quantity_month'],
+        [Sequelize.literal('(SELECT SUM(quantity) FROM drops WHERE item_id = d.item_id)'), 'total_quantity_all_time']
+      ],
+      where: Sequelize.where(Sequelize.literal('ym_partition'), Sequelize.literal('YEAR(CURRENT_DATE()) * 100 + MONTH(CURRENT_DATE())')),
+      group: ['item_id', 'item_name'],
+      order: [[Sequelize.literal('total_value'), 'DESC']],
+      limit: 10
+    });
 
     const formattedLoots = valuableLoots.map(loot => ({
-      ...loot,
-      total_value: formatValue(loot.total_value),
-      total_quantity_month: formatValue(loot.total_quantity_month),
-      total_quantity_all_time: formatValue(loot.total_quantity_all_time)
+      ...loot.get(),
+      total_value: formatValue(loot.get('total_value')),
+      total_quantity_month: formatValue(loot.get('total_quantity_month')),
+      total_quantity_all_time: formatValue(loot.get('total_quantity_all_time'))
     }));
 
     cache.set(cacheKey, formattedLoots);
@@ -477,6 +447,7 @@ router.get('/api/most_valuable', async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
 router.get('/api/stats', async (req, res) => {
   const cacheKey = 'stats';
   const cachedData = cache.get(cacheKey);
@@ -486,22 +457,26 @@ router.get('/api/stats', async (req, res) => {
   }
 
   try {
-    const [stats] = await pool.execute(`
-      SELECT
-        COUNT(*) AS totalDropCtMonth,
-        SUM(value) AS lootThisMonth,
-        (SELECT COUNT(*) FROM users) AS totalUsers,
-        (SELECT COUNT(*) FROM users WHERE discordId != 0) AS pluginUsers
-      FROM drops
-      WHERE time >= DATE_FORMAT(NOW() ,'%Y-%m-01')
-    `);
+    const stats = await Drop.findOne({
+      attributes: [
+        [Sequelize.fn('COUNT', Sequelize.col('*')), 'totalDropCtMonth'],
+        [Sequelize.fn('SUM', Sequelize.col('value')), 'lootThisMonth'],
+        [Sequelize.literal('(SELECT COUNT(*) FROM users)'), 'totalUsers'],
+        [Sequelize.literal('(SELECT COUNT(*) FROM users WHERE discordId != 0)'), 'pluginUsers']
+      ],
+      where: {
+        time: {
+          [Op.gte]: Sequelize.literal('DATE_FORMAT(NOW(),"%Y-%m-01")')
+        }
+      }
+    });
 
     const formattedStats = {
-      ...stats[0],
-      totalDropCtMonth: formatValue(stats[0].totalDropCtMonth),
-      lootThisMonth: formatValue(stats[0].lootThisMonth),
-      totalUsers: formatValue(stats[0].totalUsers),
-      pluginUsers: formatValue(stats[0].pluginUsers)
+      ...stats.get(),
+      totalDropCtMonth: formatValue(stats.get('totalDropCtMonth')),
+      lootThisMonth: formatValue(stats.get('lootThisMonth')),
+      totalUsers: formatValue(stats.get('totalUsers')),
+      pluginUsers: formatValue(stats.get('pluginUsers'))
     };
 
     cache.set(cacheKey, formattedStats);
@@ -522,11 +497,9 @@ router.get('/api/news', async (req, res) => {
   }
 
   try {
-    const [newsPosts] = await pool.execute(`
-      SELECT id, title, content, post_type, pinned, image_url, video_url, timestamp 
-      FROM news_posts
-      ORDER BY pinned DESC, timestamp DESC
-    `);
+    const newsPosts = await NewsPost.findAll({
+      order: [['pinned', 'DESC'], ['timestamp', 'DESC']]
+    });
 
     cache.set(cacheKey, newsPosts);
 

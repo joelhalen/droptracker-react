@@ -1,17 +1,35 @@
-const mongoose = require('mongoose');
-const AutoIncrement = require('mongoose-sequence')(mongoose);
+module.exports = (sequelize, DataTypes) => {
+  const User = sequelize.define('User', {
+    uid: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    displayName: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    email: DataTypes.STRING,
+    discordId: {
+      type: DataTypes.STRING,
+      unique: true
+    },
+    wiseOldManIds: {
+      type: DataTypes.JSON,
+      defaultValue: []
+    },
+    rsns: {
+      type: DataTypes.JSON,
+      defaultValue: []
+    },
+    clanId: DataTypes.INTEGER
+  });
 
-const userSchema = new mongoose.Schema({
-  displayName: { type: String, required: true },
-  email: { type: String, required: true, default: "" },
-  discordId: { type: String, unique: true },
-  wiseOldManIds: { type: [String], default: [] }, 
-  rsns: { type: [String], default: [] },
-  clanId: { type: [String], default: [] },
-  uid: { type: Number, unique: true }
-});
+  User.associate = models => {
+    User.belongsTo(models.Clan, { foreignKey: 'clanId' });
+    User.hasMany(models.Notification, { foreignKey: 'userId' });
+    User.hasMany(models.Log, { foreignKey: 'userId' });
+  };
 
-userSchema.plugin(AutoIncrement, { inc_field: 'uid'});
-
-const User = mongoose.model('User', userSchema);
-module.exports = User;
+  return User;
+};

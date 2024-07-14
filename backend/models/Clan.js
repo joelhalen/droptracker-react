@@ -1,16 +1,22 @@
-const mongoose = require('mongoose');
-const AutoIncrement = require('mongoose-sequence')(mongoose);
+module.exports = (sequelize, DataTypes) => {
+  const Clan = sequelize.define('Clan', {
+    cid: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    displayName: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    discordServerId: DataTypes.STRING,
+    description: DataTypes.TEXT,
+    clanType: DataTypes.STRING
+  });
 
-const clanSchema = new mongoose.Schema({
-  displayName: { type: String, required: true },
-  discordServerId: { type: String },
-  description: { type: String },
-  clanType: { type: String },
-  cid: { type: Number, unique: true }
-	
-})
+  Clan.associate = models => {
+    Clan.hasMany(models.User, { foreignKey: 'clanId' });
+  };
 
-clanSchema.plugin(AutoIncrement, { inc_field: 'cid'});
-
-const Clan = mongoose.model('Clan', clanSchema);
-module.exports = Clan;
+  return Clan;
+};

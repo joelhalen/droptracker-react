@@ -2,12 +2,12 @@ import React from 'react';
 import ProfileSidebar from './ProfileSidebar';
 import ProfileContent from './ProfileContent';
 
-const Profile = () => {
+const Profile = ({ userId }) => {
   return (
     <div className="profile">
       <div className="profile-container">
-        <ProfileSidebar />
-        <ProfileContent />
+        <ProfileSidebar userId={userId} />
+        <ProfileContent userId={userId} />
       </div>
     </div>
   );
