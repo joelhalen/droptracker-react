@@ -6,6 +6,10 @@ const NodeCache = require('node-cache');
 const cache = new NodeCache({ stdTTL: 600 });
 const { sendMessageToAllClients, sendMessageToLocalClients } = require('../utils/websocketMessageAll');
 const axios = require('axios');
+const db = require('../../models'); // Adjust the path based on your directory structure
+const { User, Clan, Drop, DropTotal, Log, NewsPost, Notification, ClanSettings, DiscordEmbed } = require('../../models');
+const GetClanTotal = require('../utils/GetClanTotal');
+
 
 const { Sequelize, Op } = require('sequelize');
 
@@ -13,12 +17,14 @@ const womclient = new WOMClient({
   userAgent: '@joelhalen -discord'
 });
 
-const { User, Clan, Drop, DropTotal, Log, NewsPost, Notification } = require('../../models');
-
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const REDIRECT_URI = process.env.REDIRECT_URI;
 const SECRET_KEY = process.env.SECRET_KEY;
+
+
+        {/* Discord Routes for login/authentication */}
+
 
 router.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
@@ -139,6 +145,8 @@ router.get('/auth/me', async (req, res) => {
   }
 });
 
+{/* Website notifications (create + get) */}
+
 router.get('/notifications', async (req, res) => {
   try {
     const token = req.headers.authorization.split(' ')[1];
@@ -176,6 +184,10 @@ router.post('/api/notifications', async (req, res) => {
     res.status(500).json({ error: 'Failed to create notification' });
   }
 });
+
+
+        {/* data response functions */}
+
 
 router.get('/api/get-user-rsns', async (req, res) => {
   const { userId } = req.query;
@@ -246,11 +258,11 @@ router.get('/api/check-rsn-uniqueness', async (req, res) => {
           );
 
           await Log.create({
-            eventType: "rsn claimed",
+            event_type: "rsn claimed",
             description: `${userId} has claimed ${rsn} (womId: ${womId})`,
-            eventId: 2,
-            userId: userDroptrackerId,
-            additionalData: { rsn, womId, overallLevel, ehb, ehp }
+            event_id: 2,
+            user_id: userDroptrackerId,
+            additional_data: { rsn, womId, overallLevel, ehb, ehp }
           });
 
           console.log(`${rsn} claimed by ID ${userId}`);
@@ -282,8 +294,8 @@ router.get('/api/top_players_by_drops', async (req, res) => {
     const topPlayers = await Drop.findAll({
       attributes: [
         'rsn',
-        [Sequelize.fn('SUM', Sequelize.col('value') * Sequelize.col('quantity')), 'total_value']
-      ],
+        [Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value`, 0) * COALESCE(`quantity`, 0)')), 'total_value'],
+        ],
       include: [{
         model: User,
         attributes: ['uid', 'displayName'],
@@ -317,6 +329,9 @@ router.get('/api/top_players_by_drops', async (req, res) => {
 });
 
 const formatValue = (value) => {
+    if (value == null) {
+    return '0';
+  }
   if (value >= 1e9) {
     return (value / 1e9).toFixed(3) + 'B';
   } else if (value >= 1e6) {
@@ -327,6 +342,7 @@ const formatValue = (value) => {
     return value.toString();
   }
 };
+
 router.get('/api/recent_drops', async (req, res) => {
   const cacheKey = 'recent_drops';
   const cachedData = cache.get(cacheKey);
@@ -344,26 +360,35 @@ router.get('/api/recent_drops', async (req, res) => {
         'itemId',
         'rsn',
         'itemName',
-        'quantity',
-        'value',
         'npcName',
         'time',
-        [Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value` * `quantity`, 0)')), 'total_value'],
+        [Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value`, 0) * COALESCE(`quantity`, 0)')), 'total_value'],
         [Sequelize.fn('SUM', Sequelize.col('quantity')), 'total_quantity_month'],
-        [Sequelize.literal('(SELECT SUM(quantity) FROM drops WHERE `itemId` = `Drop.itemId`)'), 'total_quantity_all_time']
+        [Sequelize.literal('(SELECT SUM(COALESCE(quantity, 0)) FROM drops WHERE drops.item_id = Drop.item_id)'), 'total_quantity_all_time']
+      ],
+      include: [
+        {
+          model: User,
+          attributes: ['uid'],
+          required: false,
+          where: Sequelize.literal('FIND_IN_SET(Drop.rsn, User.rsns)')
+        }
       ],
       where: Sequelize.where(Sequelize.literal('ym_partition'), Sequelize.literal('YEAR(CURRENT_DATE()) * 100 + MONTH(CURRENT_DATE())')),
-      group: ['itemId', 'itemName', 'time'],
-      having: Sequelize.where(Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value` * `quantity`, 0)')), '>', minDropValue),
+      group: ['itemId', 'itemName', 'time', 'User.uid'],
+      having: Sequelize.where(Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value`, 0) * COALESCE(`quantity`, 0)')), '>', minDropValue),
       order: [['total_value', 'DESC']],
       limit: 10
     });
+
+    console.log('Query result:', recentDrops);
 
     const endTime = process.hrtime(startTime);
     const executionTime = (endTime[0] * 1e9 + endTime[1]) / 1e6;
 
     const formattedDrops = recentDrops.map(drop => ({
       ...drop.get(),
+      uid: drop.User ? drop.User.uid : 0,
       total_value: formatValue(drop.get('total_value')),
       total_quantity_month: formatValue(drop.get('total_quantity_month')),
       total_quantity_all_time: formatValue(drop.get('total_quantity_all_time'))
@@ -389,6 +414,8 @@ router.get('/api/recent_drops', async (req, res) => {
     });
   }
 });
+
+
 
 
 router.post('/api/send_discord_message', (req, res) => {
@@ -422,9 +449,11 @@ router.get('/api/most_valuable', async (req, res) => {
       attributes: [
         'item_id',
         'item_name',
-        [Sequelize.fn('SUM', Sequelize.col('value') * Sequelize.col('quantity')), 'total_value'],
+        'value',
+        [Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value`, 0) * COALESCE(`quantity`, 0)')), 'total_value'],
         [Sequelize.fn('SUM', Sequelize.col('quantity')), 'total_quantity_month'],
-        [Sequelize.literal('(SELECT SUM(quantity) FROM drops WHERE item_id = d.item_id)'), 'total_quantity_all_time']
+        [Sequelize.literal('(SELECT SUM(quantity) FROM drops WHERE drops.item_id = Drop.item_id)'), 'total_quantity_all_time'],
+        'npc_name'
       ],
       where: Sequelize.where(Sequelize.literal('ym_partition'), Sequelize.literal('YEAR(CURRENT_DATE()) * 100 + MONTH(CURRENT_DATE())')),
       group: ['item_id', 'item_name'],
@@ -434,6 +463,7 @@ router.get('/api/most_valuable', async (req, res) => {
 
     const formattedLoots = valuableLoots.map(loot => ({
       ...loot.get(),
+      value: formatValue(loot.get('value')),
       total_value: formatValue(loot.get('total_value')),
       total_quantity_month: formatValue(loot.get('total_quantity_month')),
       total_quantity_all_time: formatValue(loot.get('total_quantity_all_time'))
@@ -447,6 +477,7 @@ router.get('/api/most_valuable', async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
 
 router.get('/api/stats', async (req, res) => {
   const cacheKey = 'stats';
@@ -506,6 +537,341 @@ router.get('/api/news', async (req, res) => {
     res.json(newsPosts);
   } catch (error) {
     console.error('Error fetching news:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+{/*  
+    
+    Profile Page Endpoints    
+
+*/}
+
+// Fetch user data by user ID
+router.get('/api/users/:userId', async (req, res) => {
+  const { userId } = req.params;
+  console.log("Received request for user with id " + userId);
+
+  try {
+    // Fetch the user and clan information
+    const user = await User.findByPk(userId, {
+      include: {
+        model: Clan,
+        as: 'clan',
+        attributes: ['cid', 'displayName', 'description', 'clanType', 'discordServerId']
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const rsns = user.rsns;
+
+    if (!Array.isArray(rsns) || rsns.length === 0) {
+      return res.status(400).json({ error: 'No RSNs found for the user' });
+    }
+
+    console.log("User RSNs: ", rsns);
+
+    // Fetch drops for the user's rsns
+    const drops = await Drop.findAll({
+      where: {
+        rsn: { [Op.in]: rsns }
+      },
+      attributes: ['itemName', 'quantity', 'value', 'time']
+    });
+
+    const currentMonthPartition = new Date().getFullYear() * 100 + (new Date().getMonth() + 1);
+
+
+    const totalDropsMonth = await Drop.sum('quantity', {
+      where: {
+        rsn: { [Op.in]: rsns },
+        ym_partition: currentMonthPartition
+      }
+    });
+
+    const totalDropsAllTime = await Drop.sum('quantity', {
+      where: {
+        rsn: { [Op.in]: rsns }
+      }
+    });
+
+
+    // Calculate total value month
+    const totalValueMonth = await Drop.findAll({
+      where: {
+        rsn: { [Op.in]: rsns },
+        ym_partition: currentMonthPartition
+      },
+      attributes: [[Sequelize.literal('SUM(quantity * value)'), 'totalValueMonth']]
+    });
+
+    // Calculate total value all time
+    const totalValueAllTime = await Drop.findAll({
+      where: {
+        rsn: { [Op.in]: rsns }
+      },
+      attributes: [[Sequelize.literal('SUM(quantity * value)'), 'totalValueAllTime']]
+    });
+
+    const userData = {
+      ...user.toJSON(),
+      drops,
+      totalDropsMonth: formatValue(totalDropsMonth) || 0,
+      totalDropsAllTime: formatValue(totalDropsAllTime) || 0,
+      totalValueMonth: formatValue(totalValueMonth[0].dataValues.totalValueMonth) || 0,
+      totalValueAllTime: formatValue(totalValueAllTime[0].dataValues.totalValueAllTime) || 0
+    };
+
+    res.json(userData);
+  } catch (error) {
+    console.error('Error fetching user data:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+// Fetch drop data for a user by user ID
+router.get('/api/users/:userId/drops', async (req, res) => {
+  const { userId } = req.params;
+  console.log("Received request for drop data for user with id " + userId);
+
+  try {
+    // Fetch the user's rsns to identify their drops
+    const user = await User.findByPk(userId, {
+      attributes: ['rsns']  // Ensure 'rsns' is an array of RuneScape names associated with the user
+    });
+
+    if (!user || !Array.isArray(user.rsns) || user.rsns.length === 0) {
+      return res.status(404).json({ error: 'User or RSNs not found' });
+    }
+
+    // Fetch drops using the rsns with filters for value and image url
+    const drops = await Drop.findAll({
+      where: {
+        rsn: { [Op.in]: user.rsns },
+        value: { [Op.gt]: 1000000 }, // Greater than 1,000,000
+        imageUrl: { [Op.ne]: '' }   // Image URL is not empty
+      },
+      attributes: ['rsn', 'itemName', 'npcName', 'quantity', 'value', 'time', 'imageUrl'],
+      order: [['time', 'DESC']]  // Ordering by the time the drops were received
+    });
+
+    if (!drops || drops.length === 0) {
+      return res.status(404).json({ error: 'No qualifying drops found for the user' });
+    }
+
+    // Format the drops and calculate total_value
+    const formattedDrops = drops.map(drop => {
+      const totalValue = drop.quantity * drop.value;
+      return {
+        ...drop.get(),
+        total_value: formatValue(totalValue)
+      };
+    });
+
+    res.json(formattedDrops);
+  } catch (error) {
+    console.error('Error fetching drop data:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+{/* Clan Endpoints */}
+router.post('/create-clan', async (req, res) => {
+  const { displayName, discordServerId, description, clanType, womClanId, authedUsers, settings } = req.body;
+
+  const t = await db.sequelize.transaction();
+  console.log("Creating new server with ID" + discordServerId);
+  try {
+    // Create the clan
+    const newClan = await Clan.create({
+      displayName,
+      discordServerId,
+      description,
+      clanType,
+      womClanId,
+      authedUsers
+    }, { transaction: t });
+
+    // Default settings
+    const defaultSettings = {
+      loot_leaderboard_message_id: "",
+      loot_leaderboard_channel_id: "",
+      channel_id_to_post_loot: "",
+      only_send_drops_with_images: false,
+      minimum_value_to_send_drop: 2500000,
+      voice_channel_to_display_monthly_loot: "",
+      voice_channel_to_display_wom_group_member_count: "",
+      send_notifications_for_new_collection_logs: true,
+      send_notifications_for_new_personal_bests: true,
+      google_spreadsheet_id: ""
+    };
+
+    await ClanSettings.create({
+      clanId: newClan.cid,
+      settings: { ...defaultSettings, ...settings }
+    }, { transaction: t });
+
+    const defaultLootboardEmbed = {
+          title: "Loot Leaderboard",
+          description: `[Powered by DropTracker.io](https://www.droptracker.io/)`,
+          color: 0xffffff, // Correct hex color representation
+          fields: [
+            {
+              name: "Sign up!",
+              value: "Download the [DropTracker](https://www.droptracker.io/runelite) RuneLite plugin!",
+              inline: true
+            },
+            {
+              name: "Members Tracked:",
+              value: "0",
+              inline: true
+            },
+            {
+              name: "Need help?",
+              value: "[Documentation](https://www.droptracker.io/documentation)\n[Join our Discord](https://www.droptracker.io/discord)",
+              inline: false
+            }
+          ],
+          footer: {
+            text: "droptracker.io",
+            icon_url: "https://www.droptracker.io/img/dt-logo.png"
+          }
+        };
+
+        const defaultLootPostEmbed = {
+          title: "{item_name}",
+          description: `They've received a total of {player_total_month} gp this month.`,
+          color: 0xffffff, // Ensure color is correctly formatted as an integer if used in JSON or use a string if the API accepts it
+          image: {
+            url: "{screenshot_url}"
+          },
+          fields: [
+            {
+              name: "{player_name}",
+              value: "Clan Rank: {clan_rank_monthly}\nGlobal Rank: {global_rank}",
+              inline: true
+            },
+            {
+              name: "{clan_name}",
+              value: "Total Loot: {total_clan_loot_month}\nRank: {clan_rank}/{total_clans} servers",
+              inline: true
+            }
+          ],
+          footer: {
+            text: "droptracker.io",
+            icon_url: "https://www.droptracker.io/img/dt-logo.png"
+          }
+        };
+
+    await DiscordEmbed.create({
+      clanId: newClan.cid,
+      embedData: defaultLootboardEmbed,
+      content: "",
+      typeId: 1 
+    }, { transaction: t });
+
+    await DiscordEmbed.create({
+      clanId: newClan.cid,
+      embedData: defaultLootPostEmbed,
+      content: "<@{player_id}> has submitted a drop:",
+      typeId: 2
+    }, { transaction: t });
+
+    await t.commit();
+
+    res.status(201).json({ message: 'Clan, settings, and embeds created successfully', clan: newClan });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error creating clan, settings, and embed:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+router.get('/get-clan-id', async (req, res) => {
+    const { discordId } = req.query;
+    try {
+        const clan = await Clan.findOne({
+            where: {
+                discordServerId: discordId
+            }
+        });
+        if (!clan) {
+            return res.status(404).json({ message: 'Clan not found with this Discord ID' });
+        }
+        res.json({ cid: clan.cid });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
+});
+
+// Get Discord Embed for a specific clan and type
+router.get('/get-clan-embed', async (req, res) => {
+  const { clanId, typeId } = req.query; // Accept typeId in the query parameters
+
+  try {
+    const embed = await DiscordEmbed.findOne({
+      where: { 
+        clanId: clanId,
+        type_id: typeId  // Ensure both clanId and typeId match the query
+      }
+    });
+
+    if (!embed) {
+      return res.status(404).json({ message: 'Embed not found for the specified clan ID and type ID' });
+    }
+
+    res.json(embed);
+  } catch (error) {
+    console.error('Error retrieving Discord embed:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+router.get('/get-clan-total', async (req, res) => {
+  const { clanId } = req.query;
+  if (!clanId) {
+    return res.status(400).json({ message: 'Clan ID is required' });
+  }
+
+  try {
+    const result = await GetClanTotal(clanId);
+    console.log("Clan total grabbed:" + result);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update or Create Discord Embed for a specific clan
+router.post('/update-clan-embed', async (req, res) => {
+  const { clanId, embedData, typeId } = req.body;
+
+  const t = await db.sequelize.transaction();
+
+  try {
+    const existingEmbed = await DiscordEmbed.findOne({
+      where: { clanId }
+    }, { transaction: t });
+
+    if (existingEmbed) {
+      await existingEmbed.update({ embedData, typeId }, { transaction: t });
+    } else {
+      await DiscordEmbed.create({
+        clanId,
+        embedData,
+        typeId
+      }, { transaction: t });
+    }
+
+    await t.commit();
+    res.json({ message: 'Embed updated successfully' });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error updating or creating Discord embed:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

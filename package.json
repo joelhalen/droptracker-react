@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@craco/craco": "^7.1.0",
     "@fortawesome/fontawesome-svg-core": "^6.5.2",
     "@fortawesome/free-solid-svg-icons": "^6.5.2",
     "@fortawesome/react-fontawesome": "^0.2.2",
@@ -16,6 +17,7 @@
     "@types/react-router": "^5.1.20",
     "@types/react-router-dom": "^5.3.3",
     "@wise-old-man/utils": "^3.3.2",
+    "assert": "^2.1.0",
     "axios": "^1.7.2",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
@@ -23,6 +25,7 @@
     "bootstrap-icons": "^1.11.3",
     "chart.js": "^4.4.3",
     "cors": "^2.8.5",
+    "crypto-browserify": "^3.12.0",
     "discord": "^0.8.2",
     "discord-oauth2": "^2.12.1",
     "express": "^4.19.2",
@@ -34,6 +37,7 @@
     "mysql2": "^3.10.2",
     "node-cache": "^5.1.2",
     "oauth2": "^0.0.1",
+    "path-browserify": "^1.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.24.1",
@@ -41,8 +45,10 @@
     "redis": "^4.6.15",
     "redis-server": "^1.2.2",
     "sequelize": "^6.37.3",
-    "sequelize-cli": "^6.6.2",
+    "stream-browserify": "^3.0.0",
     "typescript": "^4.9.5",
+    "url": "^0.11.3",
+    "util": "^0.12.5",
     "web-vitals": "^2.1.4",
     "ws": "^8.18.0"
   },
@@ -73,6 +79,9 @@
     ]
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "sequelize-cli": "^6.6.2",
+    "webpack": "^5.93.0",
+    "webpack-cli": "^5.1.4"
   }
 }

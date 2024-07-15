@@ -1,22 +1,30 @@
 'use strict';
-const {
-  Model
-} = require('sequelize');
-module.exports = (sequelize, DataTypes) => {
+const { Model, DataTypes } = require('sequelize');
+module.exports = (sequelize) => {
   class Clan extends Model {
     static associate(models) {
-      // define association here
+      Clan.hasMany(models.User, { foreignKey: 'clanId', as: 'members' });
     }
   }
   Clan.init({
+    cid: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
     displayName: DataTypes.STRING,
     discordServerId: DataTypes.STRING,
     description: DataTypes.TEXT,
-    clanType: DataTypes.STRING
+    clanType: DataTypes.STRING,
+    womClanId: DataTypes.INTEGER,
+    authedUsers: {
+      type: DataTypes.JSON,
+      defaultValue: []
+    }
   }, {
     sequelize,
     modelName: 'Clan',
-    tableName: 'clans',  // Ensure this matches your database table name
+    tableName: 'clans',
     timestamps: false
   });
   return Clan;

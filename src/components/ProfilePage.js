@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import Profile from './profile/Profile';
 
 const ProfilePage = () => {
+
   const { userId } = useParams();
 
   return (

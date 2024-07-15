@@ -3,7 +3,7 @@ const { Model, DataTypes } = require('sequelize');
 module.exports = (sequelize) => {
   class Drop extends Model {
     static associate(models) {
-      // define association here
+      Drop.belongsTo(models.User, { foreignKey: 'rsn', targetKey: 'rsns' });
     }
   }
   Drop.init({

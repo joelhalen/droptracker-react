@@ -62,13 +62,13 @@ const HomePage = () => {
             <div key={post.id} className={`card mb-3 ${post.pinned ? 'border-primary' : ''}`}>
               <div className="card-body">
                 <h2 className="card-title pb-0 mb-0">{post.title}</h2>
-                <small className="m-5 pt-0 mt-0"> Posted in: {post.post_type}</small>
+                <small className="m-5 pt-0 mt-0"> <a href="/discord" class="text-opacity-50 text-decoration-none">View post on Discord</a></small>
                 <p className="card-text">{post.content}</p>
                 {post.image_url && <img src={post.image_url} alt={post.title} className="img-fluid mb-3" />}
                 {post.video_url && <div className="embed-responsive embed-responsive-16by9">
                   <iframe className="embed-responsive-item" src={post.video_url} allowFullScreen></iframe>
                 </div>}
-                <br /><small className="text-muted">{timeSince(post.timestamp)}</small>
+                <br /><small className="text-muted">Posted {timeSince(post.timestamp)}</small>
               </div>
               <div className="card-arrow">
               <div className="card-arrow-top-left"></div>
@@ -95,27 +95,27 @@ const HomePage = () => {
                         <td>
                           <div className="d-flex align-items-center mb-0 pb-0">
                             <img
-                              src={`/assets/img/itemdb/${drop.item_id}.png`}
+                              src={`/assets/img/itemdb/${drop.itemId}.png`}
                               width="25px"
                               height="auto"
-                              alt={drop.item_name}
+                              alt={drop.itemName}
                               className="m-2"
                             />
                             &nbsp;
                             {drop.rsn ? (
                               <a
                                 className="userProfileLink text-decoration-none"
-                                href={`/profile?player=${drop.rsn}`}
+                                href={`/profile/${drop.uid}`}
                               >
                                 {drop.rsn}
                               </a>
                             ) : (
                               drop.rsn
                             )}
-                            - {drop.item_name}
+                            - {drop.itemName}
                           </div>
                           <small className="pd-0 pt-0 pb-0 mb-0 mt-0">
-                            {timeSince(drop.time)} from {drop.npc_name}
+                            {timeSince(drop.time)} from {drop.npcName}
                           </small>
                         </td>
                         <td>
@@ -150,47 +150,54 @@ const HomePage = () => {
               </div>
               <div className="table-responsive">
                 <table className="table table-striped table-borderless mb-2px small text-nowrap">
-                  <tbody id="valueTableBody">
-                    {valuableLoots.map((item, index) => (
-                      <tr key={index}>
-                        <td>
-                          <div className="d-flex">
-                            <div className="position-relative mb-2">
-                              <div className="bg-position-center bg-size-cover bg-repeat-no-repeat w-60px h-50px" style={{ backgroundImage: `url(${item.imageUrl})` }}>
-                              </div>
-                            </div>
-                            <div className="flex-1 ps-3">
-                              <div className="mb-1">
-                                <small className="fs-9px fw-500 lh-1 d-inline-block rounded-0 badge bg-secondary bg-opacity-25 text-inverse text-opacity-75 pt-5px">{item.event}</small>
-                              </div>
-                              <div className="fw-500 text-inverse">{item.name}</div>
-                              Value: <strong>{item.value}</strong>
-                            </div>
-                          </div>
-                        </td>
-                        <td>
-                          <table className="mb-2">
-                            <tr>
-                              <td className="pe-3">QTY RECEIVED:</td>
-                              <td className="text-inverse text-opacity-75 fw-500">{item.qtyReceived}</td>
-                            </tr>
-                            <tr>
-                              <td className="pe-3">PROFIT:</td>
-                              <td className="text-inverse text-opacity-75 fw-500">{item.profit}</td>
-                            </tr>
-                            <tr>
-                              <td className="pe-3 text-nowrap">ALL-TIME:</td>
-                              <td className="text-inverse text-opacity-75 fw-500">{item.allTime}</td>
-                              </tr>
-                          </table>
-                        </td>
-                        <td>
-                          <a href="#" className="text-decoration-none text-inverse"><i className="bi bi-search"></i></a>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+  <tbody id="valueTableBody">
+    {valuableLoots.map((item, index) => (
+      <tr key={index}>
+        <td>
+          <div className="d-flex">
+            <div className="position-relative">
+              <img
+                src={`/assets/img/itemdb/${item.item_id}.png`}
+                width="25px"
+                height="auto"
+                alt={item.item_name}
+                className="m-3"
+              />
+            </div>
+            <div className="flex-1 ps-3">
+              <div className="mb-2">
+               
+                {/*  {item.npc_name} <small className="fs-9px fw-500 lh-1 d-inline-block rounded-0 badge bg-secondary bg-opacity-25 text-inverse text-opacity-75 pt-5px">{item.npc_name}</small> */}
+              </div>
+              <div className="fw-500 text-inverse">{item.item_name}</div>
+              <strong>Price: {item.value}</strong>
+            </div>
+          </div>
+        </td>
+        <td>
+          <table className="">
+            <tr>
+              <td className="pe-3">QTY RECEIVED:</td>
+              <td className="text-inverse text-opacity-75 fw-500">{item.total_quantity_month}</td>
+            </tr>
+            <tr>
+              <td className="pe-3">PROFIT (month):</td>
+              <td className="text-inverse text-opacity-75 fw-500">{item.total_value}</td>
+            </tr>
+            <tr>
+              <td className="pe-3 text-nowrap">ALL-TIME:</td>
+              <td className="text-inverse text-opacity-75 fw-500">{item.total_quantity_all_time}</td>
+            </tr>
+          </table>
+        </td>
+        {/*<td>
+          }<a href="#" className="text-decoration-none text-inverse"><i className="bi bi-search"></i></a>
+        </td>*/}
+      </tr>
+    ))}
+  </tbody>
+</table>
+
               </div>
             </div>
             <div className="card-arrow">

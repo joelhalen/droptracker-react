@@ -1,24 +1,33 @@
 'use strict';
-const {
-  Model
-} = require('sequelize');
-module.exports = (sequelize, DataTypes) => {
+const { Model, DataTypes } = require('sequelize');
+module.exports = (sequelize) => {
   class User extends Model {
     static associate(models) {
-      // define association here
+      User.belongsTo(models.Clan, { foreignKey: 'clanId', as: 'clan' });
     }
   }
   User.init({
+    uid: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
     displayName: DataTypes.STRING,
     email: DataTypes.STRING,
     discordId: DataTypes.STRING,
-    wiseOldManIds: DataTypes.JSON,
-    rsns: DataTypes.JSON,
+    wiseOldManIds: {
+      type: DataTypes.JSON,
+      defaultValue: []
+    },
+    rsns: {
+      type: DataTypes.JSON,
+      defaultValue: []
+    },
     clanId: DataTypes.INTEGER
   }, {
     sequelize,
     modelName: 'User',
-    tableName: 'users',  // Ensure this matches your database table name
+    tableName: 'users',
     timestamps: false
   });
   return User;

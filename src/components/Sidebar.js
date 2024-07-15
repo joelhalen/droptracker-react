@@ -12,12 +12,12 @@ const Sidebar = ({ isSidebarOpen }) => {
               <span className="menu-text">Home</span>
             </a>
           </div>
-          <div className="menu-item">
+          {/*<div className="menu-item">
             <a href="/analytics" className="menu-link">
               <span className="menu-icon"><i className="bi bi-bar-chart"></i></span>
               <span className="menu-text">Competitions</span>
             </a>
-          </div>
+          </div>*/}
           
           <div className="menu-header">Components</div>
           <div className="menu-item">

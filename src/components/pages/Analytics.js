@@ -1,7 +1,4 @@
 import React from 'react';
-import MostValuableDays from './MostValuableDays';
-import TopPlayersByDrops from './TopPlayersByDrops';
-import PlayersOnline from './PlayersOnline';
 
 const Analytics = () => {
   return (
@@ -11,13 +8,10 @@ const Analytics = () => {
       </h1>
       <div className="row" data-masonry='{"percentPosition": true }'>
         <div className="col-lg-6 col-xl-4 mb-4">
-          <MostValuableDays />
         </div>
         <div className="col-lg-6 col-xl-4 mb-4">
-          <TopPlayersByDrops />
         </div>
         <div className="col-lg-6 col-xl-4 mb-4">
-          <PlayersOnline />
         </div>
       </div>
     </div>

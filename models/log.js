@@ -1,28 +1,49 @@
 'use strict';
-const {
-  Model
-} = require('sequelize');
-module.exports = (sequelize, DataTypes) => {
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
   class Log extends Model {
-    /**
-     * Helper method for defining associations.
-     * This method is not a part of Sequelize lifecycle.
-     * The `models/index` file will call this method automatically.
-     */
     static associate(models) {
       // define association here
     }
   }
+
   Log.init({
-    timestamp: DataTypes.DATE,
-    eventType: DataTypes.STRING,
-    description: DataTypes.TEXT,
-    eventId: DataTypes.INTEGER,
-    userId: DataTypes.INTEGER,
-    additionalData: DataTypes.JSON
+    log_id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    timestamp: {
+      type: DataTypes.DATE,
+      defaultValue: DataTypes.NOW
+    },
+    event_type: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    description: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    event_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    user_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    additional_data: {
+      type: DataTypes.JSON,
+      allowNull: true
+    }
   }, {
     sequelize,
     modelName: 'Log',
+    tableName: 'logs',
+    timestamps: false
   });
+
   return Log;
 };
