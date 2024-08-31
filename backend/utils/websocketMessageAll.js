@@ -2,7 +2,6 @@ const { getClients } = require('./websocketClients');
 const WebSocket = require('ws'); // Import WebSocket from the ws module
 
 const sendMessageToAllClients = (type, targetChannel, targetUser, content, embed) => {
-  console.log("CALLING SENDMESSAGETOALLCLIENTS");
   const message = {
     type: type,
     targetChannel: targetChannel,
@@ -21,7 +20,6 @@ const sendMessageToAllClients = (type, targetChannel, targetUser, content, embed
 };
 
 const sendMessageToLocalClients = (type, targetChannel, targetUser, content, embed) => {
-  console.log("CALLING SENDMESSAGETOLOCALCLIENTS");
   const message = {
     type: type,
     targetChannel: targetChannel,
@@ -33,7 +31,7 @@ const sendMessageToLocalClients = (type, targetChannel, targetUser, content, emb
 
   const clients = getClients(); 
   clients.forEach(({ client, ip }) => {
-    if (client.readyState === WebSocket.OPEN && (ip === '127.0.0.1' || ip === '::1')) {
+    if (client.readyState === WebSocket.OPEN && (ip === '127.0.0.1' || ip === '::1' || ip === "51.81.166.148")) {
       client.send(messageString);
     }
   });

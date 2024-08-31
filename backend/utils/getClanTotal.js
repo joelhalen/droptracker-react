@@ -1,165 +1,421 @@
-const db = require('../../models'); // Adjust the path based on your directory structure
-const { Clan, User, Drop } = db;
+const db = require('../../models');
+const { Clan, User, Drop, RSAccount, ClanMembers } = db;
 const { Sequelize } = require('sequelize');
-const { WOMClient } = require('@wise-old-man/utils');
+const { womclient, rateLimitedWomClientCall } = require('../wom/wom');
+const { client } = require('../redis/redisClient'); 
 
-const womclient = new WOMClient({
-  userAgent: '@joelhalen -discord'
-});
+const getCacheKey = (rsn, npcName, timeframe) => {
+  return JSON.stringify({ rsn, npcName, timeframe });
+};
 
-// Cache to store the last request time and data for each clan
-const cache = {};
+const trackedNPCs = ['Chambers of Xeric',
+  'Theatre of Blood', 'Tombs of Amascut',
+  'Phantom Muspah', 'Zulrah', 'Vorkath', 'Leviathan',
+  'Vardorvis', 'The Whisperer', 'Duke Sucellus',
+  'Alchemical Hydra', 'General Graardor', 'Commander Zilyana',
+  "K'ril Tsutsaroth", "Kree'arra", "The Gauntlet", 'The Corrupted Gauntlet',
+  "Clue scroll (master)", "Clue scroll (easy)", "Clue scroll (medium)", "Clue scroll (elite)",
+  'Barrows', 'Corporeal Beast'];
 
-const GetClanTotal = async (clanId) => {
+
+
+const calculateTotalLootFromCache = async (rsns, timeframe) => {
+  const timeframeLabel = getTimeframeLabel(timeframe);
+
+  const lootPromises = rsns.map(async (rsn) => {
+    const lootDataPromises = trackedNPCs.map(async (npcName) => {
+      const cacheKey = getCacheKey(rsn, npcName, timeframeLabel);
+      const cachedData = await client.get(cacheKey);
+      return cachedData ? JSON.parse(cachedData).totalLoot : 0;
+    });
+
+    const totalLoot = (await Promise.all(lootDataPromises)).reduce((acc, val) => acc + val, 0);
+    return totalLoot;
+  });
+
+  const totalLoot = (await Promise.all(lootPromises)).reduce((acc, val) => acc + val, 0);
+  return totalLoot;
+};
+
+const calculateGlobalRankingFromCache = async (rsns, timeframe) => {
+  const timeframeLabel = getTimeframeLabel(timeframe);
+
+  const lootPromises = rsns.map(async (rsn) => {
+    const lootDataPromises = trackedNPCs.map(async (npcName) => {
+      const cacheKey = getCacheKey(rsn, npcName, timeframeLabel);
+      const cachedData = await client.get(cacheKey);
+      return cachedData ? JSON.parse(cachedData).totalLoot : 0;
+    });
+
+    const totalLoot = (await Promise.all(lootDataPromises)).reduce((acc, val) => acc + val, 0);
+    return { rsn, totalLoot };
+  });
+
+  const lootResults = await Promise.all(lootPromises);
+  lootResults.sort((a, b) => b.totalLoot - a.totalLoot);
+
+  return lootResults;
+};
+
+const calculateClanRankingFromCache = async (clanId, rsns, timeframe) => {
+  const timeframeLabel = getTimeframeLabel(timeframe);
+
+  const clanMembers = await ClanMembers.findAll({ 
+    where: {
+        clanId: clanId
+    }
+  });
+
+  const clanMemberNames = clanMembers.map(member => member.displayName);
+
+  const lootPromises = clanMemberNames.map(async (rsn) => {
+    const lootDataPromises = trackedNPCs.map(async (npcName) => {
+      const cacheKey = getCacheKey(rsn, npcName, timeframeLabel);
+      const cachedData = await client.get(cacheKey);
+      return cachedData ? JSON.parse(cachedData).totalLoot : 0;
+    });
+
+    const totalLoot = (await Promise.all(lootDataPromises)).reduce((acc, val) => acc + val, 0);
+    return { rsn, totalLoot };
+  });
+
+  const lootResults = await Promise.all(lootPromises);
+  lootResults.sort((a, b) => b.totalLoot - a.totalLoot);
+
+  return lootResults;
+};
+
+const getTimeframeLabel = (timeframe) => {
+  const { startTime, endTime } = timeframe;
+  const start = `${startTime.getFullYear()}-${startTime.getMonth() + 1}`;
+  const end = `${endTime.getFullYear()}-${endTime.getMonth() + 1}`;
+  return `${start}-${end}`;
+};
+
+const getAllItems = async (identifiers, timeframe) => {
+  const { clanId, userId } = identifiers;
+  const { startTime, endTime } = timeframe;
+
+  console.log("Called getAllItems with clanId:", clanId, "and userId:", userId);
+
   try {
-    const clan = await Clan.findOne({
-      where: { cid: clanId }
-    });
+    const cacheKey = getCacheKey(identifiers, timeframe);
 
-    if (!clan) {
-      throw new Error('Clan not found');
+    // Check if the response is in Redis cache
+    const cachedData = await client.get(cacheKey);
+    if (cachedData) {
+      console.log('Returning cached response from Redis');
+      return JSON.parse(cachedData);
     }
 
-    // Check cache for the clan data
-    const now = Date.now();
-    const cacheEntry = cache[clanId];
+    let rsns = [];
+    const RSN_BATCH_SIZE = 2500;
+    let offset = 0;
 
-    let group;
-    if (cacheEntry && (now - cacheEntry.timestamp) < 30 * 60 * 1000) { // 30 minutes
-      group = cacheEntry.data;
-      console.log('Using cached data for clan:', clanId);
-    } else {
-      // Fetch group details using the external API
-      group = await womclient.groups.getGroupDetails(clan.womClanId);
+    // Function to process dropsBatch
+    const processDropsBatch = (dropsBatch, dropsList, playerTotals, recentDrops, totalLoot) => {
+      for (const drop of dropsBatch) {
+        const itemName = drop.itemName.toLowerCase().trim();
+        const playerName = drop.rsn;
+        const quantity = Number(drop.get('total_quantity'));
+        const value = Number(drop.get('total_value'));
+        const totalValue = value;
+        const dateTime = drop.time;
+        const itemId = drop.itemId;
 
-      // Update the cache
-      cache[clanId] = {
-        timestamp: now,
-        data: group
-      };
-      console.log('Fetched new data for clan:', clanId);
-    }
+        totalLoot += totalValue;
 
-    // Extract player IDs from the memberships array and create a map of playerId to displayName
-    const playerIdToDisplayName = {};
-    group.memberships.forEach(membership => {
-      playerIdToDisplayName[membership.playerId] = membership.player.displayName;
-    });
-    const playerIds = Object.keys(playerIdToDisplayName).map(id => parseInt(id, 10));
+        if (!dropsList[itemName]) {
+          dropsList[itemName] = { count: 0, total_value: 0, id: drop.itemId };
+        }
 
-    console.log('Player IDs:', playerIds);
-    console.log('Player ID to DisplayName Map:', playerIdToDisplayName);
+        dropsList[itemName].count += quantity;
+        dropsList[itemName].total_value += totalValue;
 
-    // Log all users with their JSON fields
-    let allUsers = await User.findAll({
-      attributes: ['uid', 'wiseOldManIds', 'rsns'],
-    });
-    console.log('All users:', allUsers.map(user => ({
-      uid: user.uid,
-      wiseOldManIds: user.wiseOldManIds,
-      rsns: user.rsns,
-    })));
+        if (!playerTotals[playerName]) {
+          playerTotals[playerName] = 0;
+        }
+        playerTotals[playerName] += totalValue;
 
-    // Construct the query for wiseOldManIds and rsns separately
-    let wiseOldManIdsQueries = playerIds.map(id => `JSON_CONTAINS(wiseOldManIds, '[${id}]', '$')`);
-    let rsnsQueries = Object.values(playerIdToDisplayName).map(name => `JSON_CONTAINS(rsns, '["${name}"]', '$')`);
-
-    // Combine the queries with OR
-    let combinedQuery = wiseOldManIdsQueries.concat(rsnsQueries).join(' OR ');
-
-    // Fetch users whose wiseOldManIds or rsns contain any of the playerIds or displayNames
-    let users = await User.findAll({
-      where: Sequelize.literal(combinedQuery)
-    });
-
-    console.log('Users found:', users);
-
-    // Add missing users
-    for (let playerId in playerIdToDisplayName) {
-      if (!users.find(user => user.wiseOldManIds.includes(Number(playerId)))) {
-        const displayName = playerIdToDisplayName[playerId];
-        const newUser = await User.create({
-          displayName: displayName,
-          wiseOldManIds: [Number(playerId)],
-          rsns: [displayName],
-          clanId: clanId
-        });
-        users.push(newUser);
-        console.log(`Added new user: ${displayName} with playerId: ${playerId}`);
+        // Only include drops in recentDrops if totalValue > 500,000 and quantity == 1
+        // if (totalValue > 500000 && quantity === 1) {
+          // console.log(`Adding to recentDrops: itemName=${itemName}, itemId=${itemId}, playerName=${playerName}, dateTime=${dateTime}, totalValue=${totalValue}, quantity=${quantity}`);
+          recentDrops.push({
+            itemName,
+            itemId,
+            playerName,
+            dateTime,
+            totalValue,
+            quantity
+          });
+        // }
       }
-    }
+    };
 
-    // Map the users' wiseOldManIds to their respective RSNs and update clanId and wiseOldManIds
-    const rsns = [];
-    const usersToUpdate = [];
+    if (clanId !== undefined) {
+      if (clanId === 0) {
+        // Fetch all drops without filtering by player names
+        const dropsList = {};
+        const playerTotals = {};
+        const recentDrops = [];
+        const BATCH_SIZE = 375000;
+        let totalLoot = 0;
+        offset = 0;
 
-    users.forEach(user => {
-      let updated = false;
-      user.wiseOldManIds.forEach((womId, index) => {
-        console.log(`Processing womId: ${womId} for user: ${user.displayName}`);
-        if (playerIds.includes(womId)) {
-          const displayName = playerIdToDisplayName[womId];
-          console.log(`Found match for womId: ${womId} with displayName: ${displayName}`);
-          if (user.rsns[index] !== displayName) {
-            user.rsns[index] = displayName;
-            updated = true;
+        // Fetch drops data with pagination
+        let dropsBatch;
+        do {
+          dropsBatch = await Drop.findAll({
+            where: {
+              time: {
+                [Sequelize.Op.between]: [startTime, endTime]
+              }
+            },
+            attributes: [
+              'itemId',
+              'rsn',
+              'itemName',
+              'npcName',
+              'time',
+              [Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value`, 0) * COALESCE(`quantity`, 0)')), 'total_value'],
+              [Sequelize.fn('SUM', Sequelize.col('quantity')), 'total_quantity']
+            ],
+            group: ['itemId', 'itemName', 'time', 'npcName', 'rsn'],
+            limit: BATCH_SIZE,
+            offset
+          });
+          console.log("Got drops, sorting through dropsBatch. length: " + dropsBatch.length);
+          processDropsBatch(dropsBatch, dropsList, playerTotals, recentDrops, totalLoot);
+
+          offset += BATCH_SIZE;
+        } while (dropsBatch.length > 0);
+
+        const result = {
+          dropsList,
+          playerTotals,
+          recentDrops,
+          totalLoot
+        };
+
+        // Store only high-value drops in Redis
+        const highValueDrops = {
+          dropsList,
+          playerTotals,
+          recentDrops: recentDrops.filter(drop => drop.totalValue > 500000 && drop.quantity === 1),
+          totalLoot
+        };
+
+        // Log the size of the data being stored
+        const serializedHighValueDrops = JSON.stringify(highValueDrops);
+        const dataSize = Buffer.byteLength(serializedHighValueDrops);
+        // console.log(`Storing high-value drops in Redis - Key: ${cacheKey}, Data Size: ${dataSize} bytes`);
+
+        // Store the high-value drops result in Redis
+        await client.set(cacheKey, serializedHighValueDrops); // Store without TTL
+
+        return result;
+      } else {
+        const clanOb = await Clan.findOne({
+          where: {
+            cid: clanId
           }
-          rsns.push(displayName);
-        }
-      });
-
-      // Update the clanId if it doesn't match
-      if (user.clanId !== clanId) {
-        user.clanId = clanId;
-        updated = true;
-      }
-
-      // Check if wiseOldManIds needs to be updated
-      if (user.wiseOldManIds.length === 0) {
-        user.wiseOldManIds = playerIds.filter(id => user.rsns.includes(id));
-        updated = true;
-      }
-
-      if (updated) {
-        usersToUpdate.push({
-          ...user.get(),
-          displayName: user.rsns[0] // Ensure displayName is set to the first rsn
         });
+        let womClanId;
+        if (clanOb) {
+          womClanId = clanOb.womClanId
+        } else {
+          womClanId = 0;
+        }
+        const clanMembers = await ClanMembers.findAll({ where: { clanId: womClanId }, limit: RSN_BATCH_SIZE });
+        rsns = clanMembers.map(member => member.displayName);
+        console.log('Fetched clan members display names:', rsns.length);
       }
-    });
-
-    // Bulk update users in the database
-    if (usersToUpdate.length > 0) {
-      await User.bulkCreate(usersToUpdate, {
-        updateOnDuplicate: ['clanId', 'wiseOldManIds', 'rsns', 'displayName']
-      });
     }
 
-    // Log the RSNs to debug
-    console.log('RSNs:', rsns);
-
-    // Fetch relevant drops based on RSNs
-    const drops = await Drop.findAll({
-      where: {
-        rsn: {
-          [Sequelize.Op.in]: rsns
+    if (userId) {
+      const user = await User.findOne({ where: { uid: userId } });
+      if (user) {dr
+        const rsAccount = await RSAccount.findOne({ where: { userId } });
+        if (rsAccount) {
+          rsns.push(rsAccount.displayName);
         }
       }
+    }
+
+    if (rsns.length === 0) {
+      console.log('No RSNs found for given identifiers');
+      return { dropsList: {}, playerTotals: {}, recentDrops: [], totalLoot: 0 };
+    }
+
+    const dropsList = {};
+    const playerTotals = {};
+    const recentDrops = [];
+    const BATCH_SIZE = 375000;
+    let totalLoot = 0;
+    offset = 0;
+
+    // Fetch drops data with pagination
+    let dropsBatch;
+    do {
+      dropsBatch = await Drop.findAll({
+        where: {
+          rsn: rsns,
+          time: {
+            [Sequelize.Op.between]: [startTime, endTime]
+          }
+        },
+        attributes: [
+          'itemId',
+          'rsn',
+          'itemName',
+          'npcName',
+          'time',
+          [Sequelize.fn('SUM', Sequelize.literal('COALESCE(`value`, 0) * COALESCE(`quantity`, 0)')), 'total_value'],
+          [Sequelize.fn('SUM', Sequelize.col('quantity')), 'total_quantity']
+        ],
+        group: ['itemId', 'itemName', 'time', 'npcName', 'rsn'],
+        limit: BATCH_SIZE,
+        offset
+      });
+      console.log("Got drops, sorting through dropsBatch. length: " + dropsBatch.length);
+      processDropsBatch(dropsBatch, dropsList, playerTotals, recentDrops, totalLoot);
+
+      offset += BATCH_SIZE;
+    } while (dropsBatch.length > 0);
+
+    const result = {
+      dropsList,
+      playerTotals,
+      recentDrops,
+      totalLoot
+    };
+
+    // Log the size of the data being stored
+    const serializedHighValueDrops = JSON.stringify({
+      dropsList,
+      playerTotals,
+      recentDrops: recentDrops.filter(drop => drop.totalValue > 500000 && drop.quantity === 1),
+      totalLoot
     });
+    const dataSize = Buffer.byteLength(serializedHighValueDrops);
+    // console.log(`Storing high-value drops in Redis - Key: ${cacheKey}, Data Size: ${dataSize} bytes`);
 
-    // Log the drops query result to debug
-    console.log('Drops:', drops);
-    
-    // Calculate the total loot from the fetched drops
-    const totalLoot = drops.reduce((sum, drop) => sum + (drop.value * drop.quantity), 0);
+    // Store the high-value drops result in Redis
+    await client.set(cacheKey, serializedHighValueDrops); // Store without TTL
 
-
-    // Return all relevant data
-    return { clan, group, users, playerIds, rsns, totalLoot };
+    return result;
   } catch (err) {
-    console.error('Error fetching clan total loot:', err);
+    console.error('Error fetching items:', err);
     throw err;
   }
 };
 
-module.exports = GetClanTotal;
+const GetClanTotal = async (identifiers = {}, timeframe = { startTime: new Date(new Date().getFullYear(), new Date().getMonth(), 1), endTime: new Date() }) => {
+  const { clanId, clanWomId, discordServerId, playerId, rsn, userUid, discordId } = identifiers;
+  const { startTime, endTime } = timeframe;
+
+  try {
+    const cacheKey = getCacheKey(identifiers, timeframe);
+
+    // Check if the response is in Redis cache
+    const cachedData = await client.get(cacheKey);
+    if (cachedData) {
+      console.log('Returning cached response from Redis');
+      return JSON.parse(cachedData);
+    }
+
+    let clan, group, playerIds = [], playerIdToDisplayName = {};
+    let userQueryConditions = [], users = [], rsns = [];
+
+    //console.log("Identifiers:", identifiers);
+    //console.log("Timeframe:", timeframe);
+
+    // Fetch clan information
+    if (clanId) {
+      if (clanId === 0) {
+        // If clanId is 0, fetch all players
+        const allRSAccounts = await RSAccount.findAll();
+        rsns = allRSAccounts.map(account => account.displayName);
+      } else {
+        clan = await Clan.findOne({ where: { cid: clanId } });
+      }
+    } else if (clanWomId) {
+      clan = await Clan.findOne({ where: { womClanId: clanWomId } });
+      if (clan) {
+        group = await refreshClanData(clan);
+      }
+    } else if (discordServerId) {
+      clan = await Clan.findOne({ where: { discordServerId } });
+    }
+
+    // Fetch group details and player IDs
+    if (clan) {
+      group = group || await rateLimitedWomClientCall(womclient.groups.getGroupDetails, clan.womClanId);
+      group.memberships.forEach(membership => {
+        playerIdToDisplayName[membership.playerId] = membership.player.displayName;
+      });
+      playerIds = Object.keys(playerIdToDisplayName).map(id => parseInt(id, 10));
+    }
+
+    // Build user query conditions
+    if (playerId) userQueryConditions.push({ id: playerId });
+    if (rsn) userQueryConditions.push({ displayName: rsn });
+    if (userUid) userQueryConditions.push({ uid: userUid });
+    if (discordId) userQueryConditions.push({ discordId });
+
+    // Fetch users based on query conditions
+    if (userQueryConditions.length > 0) {
+      users = await User.findAll({
+        where: {
+          [Sequelize.Op.or]: userQueryConditions
+        }
+      });
+    }
+
+    // Process player IDs and RS accounts
+    if (clan && playerIds.length > 0) {
+      for (const playerId of playerIds) {
+        const displayName = playerIdToDisplayName[playerId];
+        let rsAccount = await RSAccount.findOne({ where: { womId: playerId } });
+
+        if (rsAccount) {
+          if (rsAccount.displayName !== displayName) {
+            rsAccount.displayName = displayName;
+            await rsAccount.save();
+            console.log('Updated RSAccount displayName:', rsAccount);
+          }
+        } else {
+          const user = users.find(user => userQueryConditions.some(cond => user[Object.keys(cond)[0]] === Object.values(cond)[0]));
+          rsAccount = await RSAccount.create({
+            displayName,
+            womId: playerId,
+            userId: user ? user.uid : null
+          });
+          console.log('Created new RSAccount:', rsAccount);
+        }
+
+        rsns.push(displayName);
+      }
+    }
+
+    // Calculate total loot from Redis cache for all users
+    const totalLoot = await calculateTotalLootFromCache(rsns, timeframe);
+
+    // Calculate global and clan rankings using Redis cache
+    let globalRanking = await calculateGlobalRankingFromCache(rsns, timeframe);
+    let clanRanking = clan ? await calculateClanRankingFromCache(clan.cid, rsns, timeframe) : null;
+
+    const result = { clan, users, playerIds, rsns, totalLoot, globalRanking, clanRanking };
+
+    // Store the result in Redis
+    await client.set(cacheKey, JSON.stringify(result)); // Store without TTL
+
+    return result;
+  } catch (err) {
+    console.error('Error fetching stats:', err);
+    throw err;
+  }
+};
+
+
+module.exports = { GetClanTotal, calculateTotalLootFromCache, calculateGlobalRankingFromCache, calculateClanRankingFromCache, getAllItems };
